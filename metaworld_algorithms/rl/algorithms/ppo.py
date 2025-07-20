@@ -113,14 +113,12 @@ class PPOConfig(AlgorithmConfig):
     vf_config: ValueFunctionConfig | None = ValueFunctionConfig()
     clip_eps: float = 0.2
     baseline_type: Literal["linear", "mlp"] = "mlp"
-    clip_vf_loss: bool = True
     entropy_coefficient: float = 5e-3
     vf_coefficient: float = 0.001
     normalize_advantages: bool = True
     gae_lambda: float = 0.97
     num_gradient_steps: int = 32
     num_epochs: int = 16
-    target_kl: float | None = None
 
 
 class PPO(OnPolicyAlgorithm[PPOConfig]):
@@ -130,7 +128,6 @@ class PPO(OnPolicyAlgorithm[PPOConfig]):
     gamma: float = struct.field(pytree_node=False)
     clip_eps: float = struct.field(pytree_node=False)
     baseline_type: Literal["linear", "mlp"] = struct.field(pytree_node=False)
-    clip_vf_loss: bool = struct.field(pytree_node=False)
     entropy_coefficient: float = struct.field(pytree_node=False)
     vf_coefficient: float = struct.field(pytree_node=False)
     normalize_advantages: bool = struct.field(pytree_node=False)
@@ -138,7 +135,6 @@ class PPO(OnPolicyAlgorithm[PPOConfig]):
     gae_lambda: float = struct.field(pytree_node=False)
     num_gradient_steps: int = struct.field(pytree_node=False)
     num_epochs: int = struct.field(pytree_node=False)
-    target_kl: float | None = struct.field(pytree_node=False)
 
     @override
     @staticmethod
@@ -185,14 +181,12 @@ class PPO(OnPolicyAlgorithm[PPOConfig]):
             gamma=config.gamma,
             clip_eps=config.clip_eps,
             baseline_type=config.baseline_type,
-            clip_vf_loss=config.clip_vf_loss,
             entropy_coefficient=config.entropy_coefficient,
             vf_coefficient=config.vf_coefficient,
             normalize_advantages=config.normalize_advantages,
             gae_lambda=config.gae_lambda,
             num_gradient_steps=config.num_gradient_steps,
             num_epochs=config.num_epochs,
-            target_kl=config.target_kl,
         )
 
     @override
