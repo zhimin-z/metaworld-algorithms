@@ -1,4 +1,5 @@
 from typing import Any, Generator, Never
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -9,7 +10,7 @@ import scipy
 from flax import struct
 from flax.linen.fp8_ops import OVERWRITE_WITH_GRADIENT
 from flax.training.train_state import TrainState as FlaxTrainState
-from jaxtyping import Float
+from jaxtyping import Float, Array
 from typing_extensions import Callable
 
 from metaworld_algorithms.types import Rollout, LogDict
@@ -290,16 +291,12 @@ class LinearFeatureBaseline:
         observations = [[] for _ in range(rollouts.dones.shape[1])]
         rewards = [[] for _ in range(rollouts.dones.shape[1])]
         start_idx = np.zeros(rollouts.dones.shape[1], dtype=np.int32)
-        for i in range(rollouts.dones.shape[0] + 1):
-            if i == rollouts.dones.shape[0]:  # Assume final observation is terminal
-                dones = np.ones((rollouts.dones.shape[1], 1))
-            else:
-                dones = rollouts.dones[i]
-            for j, done in enumerate(dones):
-                if done and i != 0:
-                    observations[j].append(rollouts.observations[start_idx[j] : i, j])
-                    rewards[j].append(rollouts.rewards[start_idx[j] : i, j])
-                    start_idx[j] = i
+        for i in range(rollouts.dones.shape[0]):
+            for j, done in enumerate(rollouts.dones[i]):
+                if done:
+                    observations[j].append(rollouts.observations[start_idx[j] : i + 1, j])
+                    rewards[j].append(rollouts.rewards[start_idx[j] : i + 1, j])
+                    start_idx[j] = i + 1
 
         # NOTE: This will error if the trajectories are not the same length
         observations = np.stack(observations)
@@ -307,6 +304,95 @@ class LinearFeatureBaseline:
         returns = compute_returns(rewards, discount=discount)
 
         def _reshape(x: npt.NDArray) -> npt.NDArray:
+            return (
+                x.reshape(x.shape[0], -1, x.shape[-1])
+                .swapaxes(0, 1)
+                .reshape(*rollouts.rewards.shape)
+            )
+
+        coeffs = cls._fit_baseline(observations, returns)
+        features = cls._extract_features(observations, reshape=False)
+
+        return _reshape(features @ coeffs), _reshape(returns)
+
+
+class LinearFeatureBaselineJAX:
+    # TODO: This seems to not work as well as the numpy version...
+    # There is likely a subtle bug hiding somewhere.
+
+    @staticmethod
+    def _extract_features(
+        observations: Float[Array, "task rollout timestep obs_dim"], reshape=True
+    ):
+        observations = jnp.clip(observations, -10, 10)
+        ones = jnp.ones((*observations.shape[:-1], 1))
+        timestep = ones * (jnp.arange(observations.shape[-2]).reshape(-1, 1) / 100.0)
+        features = jnp.concatenate(
+            [observations, observations**2, timestep, timestep**2, timestep**3, ones],
+            axis=-1,
+        )
+        if reshape:
+            features = features.reshape(features.shape[0], -1, features.shape[-1])
+        return features
+
+    @classmethod
+    def _fit_baseline(
+        cls,
+        observations: Float[Array, "task rollout timestep obs_dim"],
+        returns: Float[Array, "task rollout timestep 1"],
+        reg_coeff: float = 1e-5,
+    ) -> jax.Array:
+        features = cls._extract_features(observations)
+        target = returns.reshape(returns.shape[0], -1, 1)
+
+        @partial(jax.vmap, in_axes=(0, 0))
+        def get_coeffs(featmat, target):
+            def _get_coeffs_inner(inputs):
+                reg_coeff, i, _ = inputs
+                task_coeffs = jnp.linalg.lstsq(
+                    featmat.T @ featmat + reg_coeff * jnp.identity(featmat.shape[1]),
+                    featmat.T @ target,
+                    rcond=-1,
+                )[0]
+                return reg_coeff * 10, i + 1, task_coeffs
+
+            coeffs = jax.lax.while_loop(
+                lambda x: jnp.logical_and(jnp.any(jnp.isnan(x[2])), x[1] <= 5),
+                _get_coeffs_inner,
+                (reg_coeff, 0, jnp.full((features.shape[-1], 1), jnp.nan))
+            )
+
+            return coeffs[2]
+
+        return get_coeffs(features, target)
+
+    @classmethod
+    def get_baseline_values_and_returns(
+        cls, rollouts: Rollout, discount: float
+    ) -> tuple[
+        Float[Array, "timestep task 1"], Float[Array, "timestep task 1"]
+    ]:
+        def compute_returns_jax(rollouts: Rollout, discount: float) -> jax.Array:
+            def get_returns(next_return, rollout):
+                next_nonterminal = 1.0 - rollout.dones
+                return_ = rollout.rewards + next_nonterminal * discount * next_return
+                return return_, return_
+
+            _, returns = jax.lax.scan(
+                get_returns,
+                jnp.zeros_like(rollouts.rewards[-1]),
+                rollouts,
+                reverse=True,
+                unroll=16,
+            )
+
+            return returns
+
+        returns = compute_returns_jax(rollouts, discount=discount)
+        observations, returns = rollouts.observations.swapaxes(0, 1), returns.swapaxes(0, 1)  # Task first
+        assert isinstance(observations, jax.Array)
+
+        def _reshape(x: jax.Array) -> jax.Array:
             return (
                 x.reshape(x.shape[0], -1, x.shape[-1])
                 .swapaxes(0, 1)

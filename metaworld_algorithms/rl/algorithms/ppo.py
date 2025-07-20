@@ -37,7 +37,7 @@ from metaworld_algorithms.types import (
     Value,
 )
 
-from .utils import LinearFeatureBaseline, compute_gae_scan, explained_variance, accumulate_concatenated_metrics
+from .utils import LinearFeatureBaselineJAX, LinearFeatureBaseline, compute_gae_scan, explained_variance, accumulate_concatenated_metrics
 from .base import OnPolicyAlgorithm
 
 
@@ -280,13 +280,7 @@ class PPO(OnPolicyAlgorithm[PPOConfig]):
         next_obs: Observation
     ) -> tuple[Self, LogDict]:
         if self.baseline_type == "linear":
-            # TODO: LinearFeatureBaseline in JAX
-            # values, returns = LinearFeatureBaseline.get_baseline_values_and_returns(
-            #     data, self.gamma
-            # )
-            # data = data._replace(values=values, returns=returns)
-            # last_values = jnp.zeros(data.rewards.shape[1:], dtype=data.rewards.dtype)
-            raise NotImplementedError("LinearFeatureBaseline not implemented in JAX")
+            last_values = jnp.zeros(data.rewards.shape[1:], dtype=data.rewards.dtype)
         else:
             assert self.value_function is not None
             last_values = self.value_function.apply_fn(self.value_function.params, next_obs)
@@ -480,8 +474,13 @@ class PPO(OnPolicyAlgorithm[PPOConfig]):
     ) -> tuple[Self, LogDict]:
         del dones
 
-        assert self.value_function is not None
         assert next_obs is not None
+        if self.baseline_type == "linear":
+            values, returns = LinearFeatureBaseline.get_baseline_values_and_returns(
+                data, self.gamma
+            )
+            data = data._replace(values=values, returns=returns)
+
         self, logs = self._update_inner(data, next_obs)
 
         # log activations

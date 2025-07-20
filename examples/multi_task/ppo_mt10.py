@@ -46,17 +46,16 @@ def main() -> None:
                 ),
                 squash_tanh=False,
             ),
-            vf_config=ValueFunctionConfig(
-                network_config=VanillaNetworkConfig(
-                    optimizer=OptimizerConfig(max_grad_norm=1.0),
-                )
-            ),
-            baseline_type="mlp",
+            # vf_config=ValueFunctionConfig(
+            #     network_config=VanillaNetworkConfig(
+            #         optimizer=OptimizerConfig(max_grad_norm=1.0),
+            #     )
+            # ),
+            vf_config=None,
+            baseline_type="linear",
             num_epochs=16,
             num_gradient_steps=32,
             gae_lambda=0.97,
-            target_kl=None,
-            clip_vf_loss=False,
             normalize_advantages=False,
         ),
         training_config=OnPolicyTrainingConfig(
