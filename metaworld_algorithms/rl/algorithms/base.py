@@ -781,7 +781,7 @@ class OnPolicyAlgorithm(
                 obs,
                 actions,
                 rewards,
-                episode_started,
+                np.logical_or(terminations, truncations),
                 value=aux_policy_outs.get("value"),
                 log_prob=aux_policy_outs.get("log_prob"),
                 mean=aux_policy_outs.get("mean"),

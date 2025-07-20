@@ -1,5 +1,6 @@
 from typing import Any, TYPE_CHECKING
 
+import numpy as np
 import flax.struct
 import flax.traverse_util
 import jax.numpy as jnp
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
 
 
 class Histogram(flax.struct.PyTreeNode):
+    total_events: int
     data: Float[npt.NDArray | Array, "..."] | None = None
     np_histogram: tuple | None = None
 
@@ -38,7 +40,7 @@ def get_logs(
     if std:
         ret[f"{name}_std"] = jnp.std(data, axis=axis)
     if hist:
-        ret[f"{name}"] = Histogram(data.reshape(-1))
+        ret[f"{name}"] = Histogram(data=data, total_events=data.shape[0])
 
     return ret
 
@@ -53,5 +55,8 @@ def pytree_histogram(pytree: PyTree, bins: int = 64) -> dict[str, Histogram]:
     for k, v in flat_dict.items():
         if isinstance(v, tuple):  # For activations
             v = v[0]
-        ret[k] = Histogram(np_histogram=jnp.histogram(v, bins=bins))  # pyright: ignore[reportArgumentType]
+        assert isinstance(v, Array) or isinstance(v, np.ndarray)
+        ret[k] = Histogram(
+            total_events=v.reshape(-1).shape[0], np_histogram=jnp.histogram(v, bins=bins)
+        )  # pyright: ignore[reportArgumentType]
     return ret

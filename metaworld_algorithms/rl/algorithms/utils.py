@@ -1,5 +1,7 @@
 from typing import Any, Generator, Never
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import numpy.typing as npt
 import optax
@@ -10,7 +12,8 @@ from flax.training.train_state import TrainState as FlaxTrainState
 from jaxtyping import Float
 from typing_extensions import Callable
 
-from metaworld_algorithms.types import Rollout
+from metaworld_algorithms.types import Rollout, LogDict
+from metaworld_algorithms.monitoring.utils import Histogram
 
 
 class TrainState(FlaxTrainState):
@@ -176,6 +179,34 @@ def compute_gae(
             returns=returns,
             advantages=advantages,
         )
+
+
+@jax.jit
+def compute_gae_scan(
+    rollouts: Rollout, last_values: jax.Array, gamma: float, gae_lambda: float
+) -> Rollout:
+    """Adapted from https://github.com/luchris429/purejaxrl/blob/main/purejaxrl/ppo.py#L142"""
+
+    def get_advantages(gae_and_next_value: tuple[jax.Array, jax.Array], rollout: Rollout):
+        assert rollout.values is not None
+
+        gae, next_value = gae_and_next_value
+        next_nonterminal = 1.0 - rollout.dones
+        delta = (rollout.rewards + next_nonterminal * gamma * next_value) - rollout.values
+        gae = delta + next_nonterminal * gamma * gae_lambda * gae
+        return (gae, rollout.values), gae
+
+    _, advantages = jax.lax.scan(
+        get_advantages,  # pyright: ignore[reportArgumentType]
+        (jnp.zeros_like(last_values), last_values),
+        rollouts,
+        reverse=True,
+        unroll=16,
+    )
+    return rollouts._replace(
+        advantages=advantages,
+        returns=advantages + rollouts.values,
+    )
 
 
 def compute_returns(
@@ -394,10 +425,50 @@ def dones_to_episode_starts(rollout: Rollout) -> Rollout:
 
 
 def explained_variance(
-    y_pred: Float[npt.NDArray, " total_num_steps"],
-    y_true: Float[npt.NDArray, " total_num_steps"],
-) -> float:
+    y_pred: Float[npt.NDArray | jax.Array, " total_num_steps"],
+    y_true: Float[npt.NDArray | jax.Array, " total_num_steps"],
+) -> Float[jax.Array, ""]:
     # From SB3 https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/common/utils.py#L50
     assert y_true.ndim == 1 and y_pred.ndim == 1
-    var_y = np.var(y_true)
-    return np.nan if var_y == 0 else float(1 - np.var(y_true - y_pred) / var_y)
+    var_y = jnp.var(y_true)
+    return jnp.where(var_y == 0, jnp.nan, 1 - jnp.var(y_true - y_pred) / var_y)
+
+
+def average_histograms_concatenated(histograms: Histogram) -> Histogram:
+    assert histograms.np_histogram is not None
+    global_min = jnp.min(histograms.np_histogram[0])
+    global_max = jnp.max(histograms.np_histogram[0])
+    max_edges = histograms.np_histogram[1].shape[-1]
+
+    target_bin_edges = jnp.linspace(global_min, global_max, 2 * max_edges - 1)
+    target_bin_centers = (target_bin_edges[:-1] + target_bin_edges[1:]) / 2
+
+    @jax.vmap
+    def resample(data):
+        counts, bin_edges = data
+        original_bin_centers = (bin_edges[..., :-1] + bin_edges[..., 1:]) / 2
+        resampled_counts = jnp.interp(target_bin_centers, original_bin_centers, counts)
+        return resampled_counts
+
+    flattened_histograms = jax.tree.map(
+        lambda x: x.reshape(-1, x.shape[-1]).astype(jnp.float32), histograms.np_histogram
+    )
+    flattened_events = jnp.reshape(histograms.total_events, -1)
+    resampled_counts = resample(flattened_histograms)
+    averaged_counts = jnp.average(resampled_counts, axis=0, weights=flattened_events)
+
+    return Histogram(
+        total_events=jnp.sum(histograms.total_events),  # pyright: ignore[reportArgumentType]
+        np_histogram=(averaged_counts, target_bin_edges),
+    )
+
+
+def accumulate_concatenated_metrics(metrics: LogDict) -> LogDict:
+    ret = {}
+    for k in metrics:
+        if not isinstance(metrics[k], Histogram):
+            ret[k] = jnp.mean(metrics[k])  # pyright: ignore[reportArgumentType,reportCallIssue]
+        else:
+            ret[k] = average_histograms_concatenated(metrics[k])  # pyright: ignore[reportArgumentType,reportCallIssue]
+
+    return ret  # pyright: ignore[reportReturnType]
