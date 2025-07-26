@@ -1,7 +1,7 @@
 import dataclasses
 from collections import defaultdict
 from functools import partial
-from typing import Self, override
+from typing import Literal, Self, override
 
 import distrax
 import gymnasium as gym
@@ -15,7 +15,10 @@ from flax.linen import FrozenDict
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from metaworld_algorithms.config.envs import MetaLearningEnvConfig
-from metaworld_algorithms.config.networks import RecurrentContinuousActionPolicyConfig
+from metaworld_algorithms.config.networks import (
+    RecurrentContinuousActionPolicyConfig,
+    ValueFunctionConfig,
+)
 from metaworld_algorithms.config.rl import AlgorithmConfig
 from metaworld_algorithms.monitoring.utils import (
     Histogram,
@@ -28,13 +31,17 @@ from metaworld_algorithms.rl.algorithms.base import RNNBasedMetaLearningAlgorith
 from metaworld_algorithms.rl.algorithms.utils import (
     LinearFeatureBaseline,
     RNNTrainState,
+    TrainState,
     compute_gae,
     explained_variance,
     normalize_advantages,
     to_deterministic_minibatch_iterator,
     to_overlapping_chunks,
 )
-from metaworld_algorithms.rl.networks import RecurrentContinuousActionPolicy
+from metaworld_algorithms.rl.networks import (
+    RecurrentContinuousActionPolicy,
+    ValueFunction,
+)
 from metaworld_algorithms.types import (
     Action,
     AuxPolicyOutputs,
@@ -45,6 +52,7 @@ from metaworld_algorithms.types import (
     RNNState,
     Rollout,
     Timestep,
+    Value,
 )
 
 
@@ -100,11 +108,48 @@ def _sample_action_dist(
     return next_state, action, action_log_prob, mean, std, key  # pyright: ignore[reportReturnType]
 
 
+@jax.jit
+def _sample_action_dist_and_value(
+    policy: RNNTrainState,
+    vf: TrainState,
+    state: RNNState,
+    observation: Observation,
+    key: PRNGKeyArray,
+) -> tuple[
+    RNNState,
+    Action,
+    LogProb,
+    Action,
+    Action,
+    Value,
+    PRNGKeyArray,
+]:
+    next_state: jax.Array
+    dist: distrax.Distribution
+
+    key, action_key = jax.random.split(key)
+    next_state, dist = policy.apply_fn(policy.params, state, observation)
+    action, action_log_prob = dist.sample_and_log_prob(seed=action_key)
+
+    if isinstance(dist, TanhMultivariateNormalDiag):
+        # HACK: use pre-tanh distributions for kl divergence
+        mean = dist.pre_tanh_mean()
+        std = dist.pre_tanh_std()
+    else:
+        mean = dist.mode()
+        std = dist.stddev()
+
+    values = vf.apply_fn(vf.params, observation)
+
+    return next_state, action, action_log_prob, mean, std, values, key  # pyright: ignore[reportReturnType]
+
+
 @dataclasses.dataclass(frozen=True)
 class RL2Config(AlgorithmConfig):
     policy_config: RecurrentContinuousActionPolicyConfig = (
         RecurrentContinuousActionPolicyConfig()
     )
+    vf_config: ValueFunctionConfig | None = None
     meta_batch_size: int = 20
     clip_eps: float = 0.2
     entropy_coefficient: float = 5e-3
@@ -114,6 +159,7 @@ class RL2Config(AlgorithmConfig):
     target_kl: float | None = None
     chunk_len: int = 200
     overlap: int = 50
+    baseline_type: Literal["mlp", "linear"] = "linear"
 
 
 class RL2(RNNBasedMetaLearningAlgorithm[RL2Config]):
@@ -133,6 +179,9 @@ class RL2(RNNBasedMetaLearningAlgorithm[RL2Config]):
     chunk_len: int = struct.field(pytree_node=False)
     overlap: int = struct.field(pytree_node=False)
 
+    baseline_type: Literal["mlp", "linear"] = struct.field(pytree_node=False)
+    vf: TrainState | None = None
+
     @override
     @staticmethod
     def initialize(
@@ -149,7 +198,7 @@ class RL2(RNNBasedMetaLearningAlgorithm[RL2Config]):
         assert env_config.action_space.shape is not None
 
         master_key = jax.random.PRNGKey(seed)
-        algorithm_key, policy_key = jax.random.split(master_key, 2)
+        algorithm_key, init_key = jax.random.split(master_key, 2)
 
         policy_net = RecurrentContinuousActionPolicy(
             action_dim=int(np.prod(env_config.action_space.shape)),
@@ -162,15 +211,26 @@ class RL2(RNNBasedMetaLearningAlgorithm[RL2Config]):
                 for _ in range(config.meta_batch_size)
             ]
         )
-        dummy_carry = policy_net.initialize_carry(config.meta_batch_size, policy_key)
+        dummy_carry = policy_net.initialize_carry(config.meta_batch_size, init_key)
 
         policy = RNNTrainState.create(
-            params=policy_net.init(policy_key, dummy_carry, dummy_obs),
+            params=policy_net.init(init_key, dummy_carry, dummy_obs),
             tx=config.policy_config.network_config.optimizer.spawn(),
             apply_fn=policy_net.apply,
             seq_apply_fn=partial(policy_net.apply, method=policy_net.rollout),
             init_carry_fn=policy_net.initialize_carry,
         )
+
+        if config.baseline_type == "mlp":
+            assert config.vf_config is not None
+            vf_net = ValueFunction(config.vf_config)
+            vf = TrainState.create(
+                params=vf_net.init(init_key, dummy_obs),
+                tx=config.vf_config.network_config.optimizer.spawn(),
+                apply_fn=vf_net.apply,
+            )
+        else:
+            vf = None
 
         return RL2(
             num_tasks=config.num_tasks,
@@ -186,6 +246,8 @@ class RL2(RNNBasedMetaLearningAlgorithm[RL2Config]):
             target_kl=config.target_kl,
             chunk_len=config.chunk_len,
             overlap=config.overlap,
+            baseline_type=config.baseline_type,
+            vf=vf,
         )
 
     @override
@@ -210,14 +272,24 @@ class RL2(RNNBasedMetaLearningAlgorithm[RL2Config]):
     def sample_action_and_aux(
         self, state: RNNState, observation: Observation
     ) -> tuple[Self, RNNState, Action, AuxPolicyOutputs]:
-        rets = _sample_action_dist(self.policy, state, observation, self.key)
-        state, action, log_prob, mean, std = jax.device_get(rets[:-1])
+        if self.baseline_type == "linear":
+            rets = _sample_action_dist(self.policy, state, observation, self.key)
+            state, action, log_prob, mean, std = jax.device_get(rets[:-1])
+            extras = {"log_prob": log_prob, "mean": mean, "std": std}
+        else:
+            assert self.vf is not None
+            rets = _sample_action_dist_and_value(
+                self.policy, self.vf, state, observation, self.key
+            )
+            state, action, log_prob, mean, std, value = jax.device_get(rets[:-1])
+            extras = {"log_prob": log_prob, "mean": mean, "std": std, "value": value}
+
         key = rets[-1]
         return (
             self.replace(key=key),
             state,
             action,
-            {"log_prob": log_prob, "mean": mean, "std": std},
+            extras,
         )
 
     def sample_action(
@@ -294,10 +366,15 @@ class RL2(RNNBasedMetaLearningAlgorithm[RL2Config]):
         new_dones[0] = 1.0
         rollouts = rollouts._replace(dones=new_dones)
 
-        values, returns = LinearFeatureBaseline.get_baseline_values_and_returns(
-            rollouts, self.gamma
-        )
-        rollouts = rollouts._replace(values=values, returns=returns)
+        if self.baseline_type == "linear":
+            values, returns = LinearFeatureBaseline.get_baseline_values_and_returns(
+                rollouts, self.gamma
+            )
+            rollouts = rollouts._replace(values=values, returns=returns)
+        else:
+            assert rollouts.values is not None
+            values = rollouts.values
+            rollouts = rollouts._replace(values=values)
 
         # NOTE: assume the final states are terminal
         dones = np.ones(rollouts.rewards.shape[1:], dtype=rollouts.rewards.dtype)
