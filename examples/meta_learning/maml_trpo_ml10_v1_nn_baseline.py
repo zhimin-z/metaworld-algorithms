@@ -36,12 +36,13 @@ def main() -> None:
     num_tasks = 10
 
     run = Run(
-        run_name="ml10_mamltrpo_nn_baseline",
+        run_name="ml10_mamltrpo_v1_nn_baseline",
         seed=args.seed,
         data_dir=args.data_dir,
         env=MetaworldMetaLearningConfig(
             env_id="ML10",
             meta_batch_size=meta_batch_size,
+            reward_func_version="v1",
         ),
         algorithm=MAMLTRPOConfig(
             num_tasks=meta_batch_size,
