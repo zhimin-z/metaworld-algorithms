@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Self, override
+from typing import Literal, Self, override
 
 import distrax
 import gymnasium as gym
@@ -16,12 +16,14 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from metaworld_algorithms.config.envs import MetaLearningEnvConfig
 from metaworld_algorithms.config.networks import (
     ContinuousActionPolicyConfig,
+    ValueFunctionConfig,
 )
 from metaworld_algorithms.config.rl import AlgorithmConfig
 from metaworld_algorithms.nn.distributions import TanhMultivariateNormalDiag
 from metaworld_algorithms.rl.algorithms.utils import MetaTrainState, TrainState
 from metaworld_algorithms.rl.networks import (
     EnsembleMDContinuousActionPolicy,
+    ValueFunction,
 )
 from metaworld_algorithms.types import (
     Action,
@@ -32,6 +34,7 @@ from metaworld_algorithms.types import (
     Observation,
     Rollout,
     Timestep,
+    Value,
 )
 
 from .base import GradientBasedMetaLearningAlgorithm
@@ -91,9 +94,41 @@ def _sample_action_dist(
     return action, action_log_prob, mean, std, key  # pyright: ignore[reportReturnType]
 
 
+@jax.jit
+def _sample_action_dist_and_value(
+    policy: TrainState,
+    vf: TrainState,
+    observation: Observation,
+    key: PRNGKeyArray,
+) -> tuple[
+    Action,
+    LogProb,
+    Action,
+    Action,
+    Value,
+    PRNGKeyArray,
+]:
+    key, action_key = jax.random.split(key)
+    dist = policy.apply_fn(policy.params, observation)
+    action, action_log_prob = dist.sample_and_log_prob(seed=action_key)
+
+    if isinstance(dist, TanhMultivariateNormalDiag):
+        # HACK: use pre-tanh distributions for kl divergence
+        mean = dist.pre_tanh_mean()
+        std = dist.pre_tanh_std()
+    else:
+        mean = dist.mode()
+        std = dist.stddev()
+
+    values = vf.apply_fn(vf.params, observation)
+
+    return action, action_log_prob, mean, std, values, key  # pyright: ignore[reportReturnType]
+
+
 @dataclasses.dataclass(frozen=True)
 class MAMLTRPOConfig(AlgorithmConfig):
     policy_config: ContinuousActionPolicyConfig = ContinuousActionPolicyConfig()
+    vf_config: ValueFunctionConfig | None = None
     policy_inner_lr: float = 0.1
     meta_batch_size: int = 20
     delta: float = 0.01
@@ -101,6 +136,7 @@ class MAMLTRPOConfig(AlgorithmConfig):
     backtrack_ratio: float = 0.8
     max_backtrack_iters: int = 15
     gae_lambda: float = 0.97
+    baseline_type: Literal["linear", "mlp"] = "linear"
 
 
 class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
@@ -114,6 +150,9 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
     max_backtrack_iters: int = struct.field(pytree_node=False)
     policy_inner_lr: float = struct.field(pytree_node=False)
     gae_lambda: float = struct.field(pytree_node=False)
+    baseline_type: Literal["linear", "mlp"] = struct.field(pytree_node=False)
+
+    vf: TrainState | None = None
 
     @override
     def init_ensemble_networks(self) -> Self:
@@ -140,7 +179,7 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
 
         master_key = jax.random.PRNGKey(seed)
 
-        algorithm_key, policy_key = jax.random.split(master_key, 2)
+        algorithm_key, init_key = jax.random.split(master_key, 2)
         policy_net = EnsembleMDContinuousActionPolicy(
             num=config.meta_batch_size,
             action_dim=int(np.prod(env_config.action_space.shape)),
@@ -155,8 +194,8 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
         )
 
         policy = MetaTrainState.create(
-            params=policy_net.init_single(policy_key, dummy_obs),
-            tx=optax.identity(), # TRPO optimiser handles the gradients
+            params=policy_net.init_single(init_key, dummy_obs),
+            tx=optax.identity(),  # TRPO optimiser handles the gradients
             inner_train_state=TrainState.create(
                 params=dict(),
                 tx=optax.sgd(learning_rate=config.policy_inner_lr),
@@ -166,6 +205,17 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
             apply_fn=None,
         )
 
+        if config.baseline_type == "mlp":
+            assert config.vf_config is not None
+            vf_net = ValueFunction(config.vf_config)
+            vf = TrainState.create(
+                params=vf_net.init(init_key, dummy_obs),
+                tx=config.vf_config.network_config.optimizer.spawn(),
+                apply_fn=vf_net.apply,
+            )
+        else:
+            vf = None
+
         return MAMLTRPO(
             num_tasks=config.num_tasks,
             gamma=config.gamma,
@@ -174,10 +224,12 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
             backtrack_ratio=config.backtrack_ratio,
             max_backtrack_iters=config.max_backtrack_iters,
             policy=policy,
+            vf=vf,
             policy_squash_tanh=config.policy_config.squash_tanh,
             key=algorithm_key,
             policy_inner_lr=config.policy_inner_lr,
             gae_lambda=config.gae_lambda,
+            baseline_type=config.baseline_type,
         )
 
     @override
@@ -192,13 +244,25 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
     def sample_action_and_aux(
         self, observation: Observation
     ) -> tuple[Self, Action, AuxPolicyOutputs]:
-        rets = _sample_action_dist(self.policy.inner_train_state, observation, self.key)
-        action, log_prob, mean, std = jax.device_get(rets[:-1])
+        if self.baseline_type == "linear":
+            rets = _sample_action_dist(
+                self.policy.inner_train_state, observation, self.key
+            )
+            action, log_prob, mean, std = jax.device_get(rets[:-1])
+            extras = {"log_prob": log_prob, "mean": mean, "std": std}
+        else:
+            assert self.vf is not None
+            rets = _sample_action_dist_and_value(
+                self.policy.inner_train_state, self.vf, observation, self.key
+            )
+            action, log_prob, mean, std, value = jax.device_get(rets[:-1])
+            extras = {"log_prob": log_prob, "mean": mean, "std": std, "value": value}
+
         key = rets[-1]
         return (
             self.replace(key=key),
             action,
-            {"log_prob": log_prob, "mean": mean, "std": std},
+            extras,
         )
 
     def sample_action(self, observation: Observation) -> tuple[Self, Action]:
@@ -234,8 +298,8 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
         def adapt_action(
             self, observations: npt.NDArray[np.float64]
         ) -> tuple[npt.NDArray[np.float64], dict[str, npt.NDArray]]:
-            self._current_agent, action, aux_policy_outs = self._current_agent.sample_action_and_aux(
-                observations
+            self._current_agent, action, aux_policy_outs = (
+                self._current_agent.sample_action_and_aux(observations)
             )
             return action, aux_policy_outs
 
@@ -263,12 +327,17 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
         self,
         rollouts: Rollout,
     ) -> Rollout:
+        if self.baseline_type == "linear":
+            values, returns = LinearFeatureBaseline.get_baseline_values_and_returns(
+                rollouts, self.gamma
+            )
+            rollouts = rollouts._replace(values=values, returns=returns)
+        else:
+            assert rollouts.values is not None
+            values = rollouts.values
+
         # NOTE: assume the final states are terminal
         dones = np.ones(rollouts.rewards.shape[1:], dtype=rollouts.rewards.dtype)
-        values, returns = LinearFeatureBaseline.get_baseline_values_and_returns(
-            rollouts, self.gamma
-        )
-        rollouts = rollouts._replace(values=values, returns=returns)
         rollouts = compute_gae(
             rollouts, self.gamma, self.gae_lambda, last_values=None, dones=dones
         )

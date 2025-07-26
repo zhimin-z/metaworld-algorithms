@@ -60,6 +60,7 @@ class MetaTrainState(TrainState):
     inner_train_state: TrainState
     expand_params: Callable = struct.field(pytree_node=False)
 
+
 def to_minibatch_iterator(
     data: Rollout, num: int, seed: int, flatten_batch_dims: bool = True
 ) -> Generator[Rollout, None, Never]:
@@ -95,7 +96,9 @@ def to_minibatch_iterator(
             )
 
 
-def to_deterministic_minibatch_iterator(data: Rollout) -> Generator[Rollout, None, Never]:
+def to_deterministic_minibatch_iterator(
+    data: Rollout,
+) -> Generator[Rollout, None, Never]:
     # Flatten batch dims
     rollouts = data
 
@@ -107,6 +110,7 @@ def to_deterministic_minibatch_iterator(data: Rollout) -> Generator[Rollout, Non
                     rollouts,
                 )
             )
+
 
 def compute_gae(
     rollouts: Rollout,
@@ -291,7 +295,9 @@ class LinearFeatureBaseline:
 def swap_rollout_axes(rollout: Rollout, axis1: int, axis2: int) -> Rollout:
     return Rollout(
         *map(
-            lambda x: x.swapaxes(axis1, axis2) if x is not None else None,
+            lambda x: x.swapaxes(axis1, axis2)
+            if x is not None and x.ndim > 2
+            else None,
             rollout,
         )  # pyright: ignore[reportArgumentType]
     )
