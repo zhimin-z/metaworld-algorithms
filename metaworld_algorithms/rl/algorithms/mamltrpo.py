@@ -41,6 +41,7 @@ from .base import GradientBasedMetaLearningAlgorithm
 from .utils import (
     LinearFeatureBaseline,
     compute_gae,
+    compute_returns,
     dones_to_episode_starts,
     normalize_advantages,
     swap_rollout_axes,
@@ -136,7 +137,7 @@ class MAMLTRPOConfig(AlgorithmConfig):
     backtrack_ratio: float = 0.8
     max_backtrack_iters: int = 15
     gae_lambda: float = 0.97
-    baseline_type: Literal["linear", "mlp"] = "linear"
+    baseline_type: Literal["linear", "mlp", "none"] = "linear"
 
 
 class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
@@ -150,7 +151,7 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
     max_backtrack_iters: int = struct.field(pytree_node=False)
     policy_inner_lr: float = struct.field(pytree_node=False)
     gae_lambda: float = struct.field(pytree_node=False)
-    baseline_type: Literal["linear", "mlp"] = struct.field(pytree_node=False)
+    baseline_type: Literal["linear", "mlp", "none"] = struct.field(pytree_node=False)
 
     vf: TrainState | None = None
 
@@ -244,7 +245,7 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
     def sample_action_and_aux(
         self, observation: Observation
     ) -> tuple[Self, Action, AuxPolicyOutputs]:
-        if self.baseline_type == "linear":
+        if self.baseline_type == "linear" or self.baseline_type == "none":
             rets = _sample_action_dist(
                 self.policy.inner_train_state, observation, self.key
             )
@@ -332,9 +333,13 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
                 rollouts, self.gamma
             )
             rollouts = rollouts._replace(values=values, returns=returns)
-        else:
+        elif self.baseline_type == "mlp":
             assert rollouts.values is not None
             values = rollouts.values
+        else:
+            # No GAE
+            returns = compute_returns(rollouts.rewards, self.gamma)
+            return rollouts._replace(returns=returns)
 
         # NOTE: assume the final states are terminal
         dones = np.ones(rollouts.rewards.shape[1:], dtype=rollouts.rewards.dtype)
@@ -353,7 +358,10 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
                 ),
                 -1,
             )
-            return -(log_probs * rollouts.advantages).mean()
+            if self.baseline_type != "none":
+                return -(log_probs * rollouts.advantages).mean()
+            else:
+                return -(log_probs * rollouts.returns).mean()
 
         grads = jax.grad(inner_opt_objective)(policy.params)
         updated_policy = policy.apply_gradients(grads=grads)  # Inner gradient step
@@ -385,7 +393,12 @@ class MAMLTRPO(GradientBasedMetaLearningAlgorithm[MAMLTRPOConfig]):
             )
 
             likelihood_ratio = jnp.exp(new_param_log_probs - rollouts.log_probs)
-            outer_objective = likelihood_ratio * rollouts.advantages
+
+            if self.baseline_type != "none":
+                outer_objective = likelihood_ratio * rollouts.advantages
+            else:
+                outer_objective = likelihood_ratio * rollouts.returns
+
             return -outer_objective.mean()
 
         # TRPO, outer gradient step
