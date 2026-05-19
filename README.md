@@ -11,7 +11,8 @@ Implementations of Multi-Task and Meta-Learning baselines for the Metaworld benc
 3. Install the dependencies: `uv pip install -e ".[cuda12]"`
 > [!NOTE]
 > To use other accelerators, replace `cuda12` with the appropriate accelerator name.
-> Valid options are `cpu`, `tpu`, `cuda12`, and `metal`.
+> Valid options are `cpu`, `tpu`, and `cuda12`.
+> macOS users should install the `cpu` extra for local development
 
 ## Structure
 
@@ -24,4 +25,3 @@ Here is how you can navigate this repository:
 - `metaworld_algorithms/rl/buffers.py` contains code for the buffers used.
 - `metaworld_algorithms/rl/algorithms/base.py` contains code for training loops (e.g. on-policy, off-policy, meta-rl).
 - `meatworld_algorithms/envsmetaworld.py` contains utilities for wrapping metaworld for use with these baselines.
-
