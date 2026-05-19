@@ -595,19 +595,19 @@ class OffPolicyAlgorithm(
                 self, actions = self.sample_action(obs)
 
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-            episode_ended = np.logical_or(terminations, truncations)
+            episode_started = np.logical_or(terminations, truncations)
             done = terminations
 
             buffer_obs = next_obs
             if "final_obs" in infos:
                 buffer_obs = np.where(
-                    episode_ended[:, None], np.stack(infos["final_obs"]), next_obs
+                    episode_started[:, None], np.stack(infos["final_obs"]), next_obs
                 )
             replay_buffer.add(obs, buffer_obs, actions, rewards, done)
 
             obs = next_obs
 
-            for i, env_ended in enumerate(episode_ended):
+            for i, env_ended in enumerate(episode_started):
                 if env_ended:
                     global_episodic_return.append(
                         infos["final_info"]["episode"]["r"][i]
@@ -652,7 +652,7 @@ class OffPolicyAlgorithm(
                 if (
                     config.evaluation_frequency > 0
                     and episodes_ended % config.evaluation_frequency == 0
-                    and done.any()
+                    and episode_started.any()
                     and global_step > 0
                 ):
                     mean_success_rate, mean_returns, mean_success_per_task = (
@@ -675,7 +675,7 @@ class OffPolicyAlgorithm(
 
                     # Checkpointing
                     if checkpoint_manager is not None:
-                        if not done.all():
+                        if not episode_started.all():
                             raise NotImplementedError(
                                 "Checkpointing currently doesn't work for the case where evaluation is run before all envs have finished their episodes / are about to be reset."
                             )
