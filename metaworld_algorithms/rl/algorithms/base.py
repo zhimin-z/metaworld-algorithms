@@ -595,18 +595,19 @@ class OffPolicyAlgorithm(
                 self, actions = self.sample_action(obs)
 
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-            done = np.logical_or(terminations, truncations)
+            episode_ended = np.logical_or(terminations, truncations)
+            done = terminations
 
             buffer_obs = next_obs
             if "final_obs" in infos:
                 buffer_obs = np.where(
-                    done[:, None], np.stack(infos["final_obs"]), next_obs
+                    episode_ended[:, None], np.stack(infos["final_obs"]), next_obs
                 )
             replay_buffer.add(obs, buffer_obs, actions, rewards, done)
 
             obs = next_obs
 
-            for i, env_ended in enumerate(done):
+            for i, env_ended in enumerate(episode_ended):
                 if env_ended:
                     global_episodic_return.append(
                         infos["final_info"]["episode"]["r"][i]
@@ -833,7 +834,9 @@ class OnPolicyAlgorithm(
                     rollouts,
                     dones=terminations,
                     next_obs=np.where(
-                        episode_started[:, None], np.stack(infos["final_obs"]), next_obs
+                        episode_started[:, None],
+                        np.stack(infos["final_obs"]),
+                        next_obs,
                     ),
                 )
                 rollout_buffer.reset()
