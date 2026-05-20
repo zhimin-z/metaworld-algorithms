@@ -4,7 +4,7 @@ import gc
 import pathlib
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import jax
 import numpy as np
@@ -24,7 +24,7 @@ from metaworld_algorithms.config.rl import (
     OffPolicyTrainingConfig,
     TrainingConfig,
 )
-from metaworld_algorithms.monitoring import RecordingConfig
+from metaworld_algorithms.monitoring import RecordingConfig, maybe_record_agent_videos
 from metaworld_algorithms.rl.algorithms import (
     Algorithm,
     OffPolicyAlgorithm,
@@ -68,6 +68,12 @@ class Run:
 
     def _get_data_dir(self) -> pathlib.Path:
         return self.data_dir / f"{self.run_name}_{self.seed}"
+
+    def _get_recording_config(self) -> RecordingConfig:
+        recording_dir = pathlib.Path(self.recording.recording_dir)
+        if not recording_dir.is_absolute():
+            recording_dir = self._get_data_dir() / recording_dir
+        return replace(self.recording, recording_dir=recording_dir)
 
     def _get_latest_checkpoint_metadata(self) -> CheckpointMetadata | None:
         checkpoint_manager = ocp.CheckpointManager(
@@ -185,6 +191,8 @@ class Run:
         if self._wandb_enabled:
             wandb.config.update(algorithm.get_num_params())
 
+        recording = self._get_recording_config()
+
         # Train
         agent = algorithm.train(
             config=self.training_config,
@@ -196,16 +204,19 @@ class Run:
             checkpoint_manager=checkpoint_manager,
             checkpoint_metadata=checkpoint_metadata,
             buffer_checkpoint=buffer_checkpoint,
+            recording=recording,
         )
 
         # Cleanup
         if self.checkpoint:
+            final_video_agent = None
             if isinstance(
                 agent, (OnPolicyAlgorithm, OffPolicyAlgorithm)
             ) and not isinstance(self.env, MetaLearningEnvConfig):
                 mean_success_rate, mean_returns, mean_success_per_task = (
                     self.env.evaluate(envs, agent)
                 )
+                final_video_agent = agent
                 envs.close()
                 del envs
             elif isinstance(agent, MetaLearningAlgorithm) and isinstance(
@@ -223,6 +234,20 @@ class Run:
             else:
                 envs.close()
                 raise ValueError("Invalid agent / env combination.")
+
+            if final_video_agent is not None:
+                final_videos = maybe_record_agent_videos(
+                    self.env,
+                    final_video_agent,
+                    self.training_config.total_steps + 1,
+                    self.seed,
+                    0,
+                    recording,
+                    is_final=True,
+                    log_to_wandb=self._wandb_enabled,
+                )
+                if final_videos:
+                    print(f"Recorded {len(final_videos)} final video(s)")
 
             final_metrics = {
                 "charts/mean_success_rate": float(mean_success_rate),

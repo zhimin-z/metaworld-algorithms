@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
+    from metaworld_algorithms.config.envs import EnvConfig
     from metaworld_algorithms.types import Agent, GymVectorEnv
 
 
@@ -30,7 +31,7 @@ class RecordedVideo:
 @dataclass(frozen=True)
 class RecordingConfig:
     enabled: bool = False
-    every_n_evaluations: int = 5
+    every_n_evaluations: int = 10
     record_final: bool = True
     episodes_per_task: int = 1
     fps: int = 30
@@ -41,7 +42,7 @@ class RecordingConfig:
     overlay_tail_frames: int = 20
     overlay_text_height_fraction: float = 0.05
     overlay_background_alpha: float = 0.50
-    output_subdir: str = "videos"
+    recording_dir: str | Path = "videos"
 
     def __post_init__(self) -> None:
         if self.enabled:
@@ -65,13 +66,46 @@ class RecordingConfig:
 
 
 def should_record_videos(
-    config: RecordingConfig, evaluation_index: int, *, is_final: bool = False
+    config: RecordingConfig, evaluation_index: int, is_final: bool = False
 ) -> bool:
     if not config.enabled:
         return False
     if is_final:
         return config.record_final
     return evaluation_index % config.every_n_evaluations == 0
+
+
+def maybe_record_agent_videos(
+    env_config: "EnvConfig",
+    agent: "Agent",
+    step: int,
+    seed: int,
+    evaluation_index: int,
+    config: RecordingConfig | None = None,
+    is_final: bool = False,
+    log_to_wandb: bool = False,
+) -> list[RecordedVideo]:
+    if config is None or not should_record_videos(
+        config, evaluation_index, is_final=is_final
+    ):
+        return []
+
+    video_envs = env_config.spawn_rendered(seed=seed)
+    try:
+        videos = record_agent_videos(
+            envs=video_envs,
+            agent=agent,
+            out_dir=config.recording_dir,
+            step=step,
+            config=config,
+        )
+    finally:
+        video_envs.close()
+
+    if log_to_wandb and videos:
+        log_recorded_videos(videos, step=step)
+
+    return videos
 
 
 def record_agent_videos(
@@ -87,6 +121,9 @@ def record_agent_videos(
     video_dir.mkdir(parents=True, exist_ok=True)
 
     task_names = [str(task_name) for task_name in envs.get_attr("task_name")]
+    agent_init = getattr(agent, "init", None)
+    if callable(agent_init):
+        agent_init()
     obs, _ = envs.reset()
     agent.reset(np.ones(envs.num_envs, dtype=np.bool_))
 
@@ -291,6 +328,17 @@ def _write_video(path: Path, frames: list[np.ndarray], *, fps: float) -> None:
     import imageio.v2 as imageio
 
     imageio.mimsave(path, frames, fps=fps, macro_block_size=1)
+
+
+def log_recorded_videos(videos: list[RecordedVideo], step: int) -> None:
+    import wandb
+
+    logs = {}
+    for video in videos:
+        key = f"videos/env_{video.env_index:02d}_episode_{video.episode_index:02d}"
+        logs[key] = wandb.Video(str(video.path), caption=video.caption)
+
+    wandb.log(logs, step=step)
 
 
 def _episode_success(infos: dict, env_index: int) -> bool:

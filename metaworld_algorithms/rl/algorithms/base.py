@@ -20,6 +20,7 @@ from metaworld_algorithms.config.rl import (
     RNNBasedMetaLearningTrainingConfig,
     TrainingConfig,
 )
+from metaworld_algorithms.monitoring import RecordingConfig, maybe_record_agent_videos
 from metaworld_algorithms.monitoring.utils import log
 from metaworld_algorithms.rl.buffers import (
     AbstractReplayBuffer,
@@ -79,6 +80,7 @@ class Algorithm(
         checkpoint_manager: ocp.CheckpointManager | None = None,
         checkpoint_metadata: CheckpointMetadata | None = None,
         buffer_checkpoint: ReplayBufferCheckpoint | None = None,
+        recording: RecordingConfig | None = None,
     ) -> Self: ...
 
 
@@ -115,6 +117,7 @@ class MetaLearningAlgorithm(
         checkpoint_manager: ocp.CheckpointManager | None = None,
         checkpoint_metadata: CheckpointMetadata | None = None,
         buffer_checkpoint: ReplayBufferCheckpoint | None = None,
+        recording: RecordingConfig | None = None,
     ) -> Self: ...
 
 
@@ -162,6 +165,7 @@ class GradientBasedMetaLearningAlgorithm(
         checkpoint_manager: ocp.CheckpointManager | None = None,
         checkpoint_metadata: CheckpointMetadata | None = None,
         buffer_checkpoint: ReplayBufferCheckpoint | None = None,
+        recording: RecordingConfig | None = None,
     ) -> Self:
         global_episodic_return: Deque[float] = deque([], maxlen=20 * self.num_tasks)
         global_episodic_length: Deque[int] = deque([], maxlen=20 * self.num_tasks)
@@ -372,6 +376,7 @@ class RNNBasedMetaLearningAlgorithm(
         checkpoint_manager: ocp.CheckpointManager | None = None,
         checkpoint_metadata: CheckpointMetadata | None = None,
         buffer_checkpoint: ReplayBufferCheckpoint | None = None,
+        recording: RecordingConfig | None = None,
     ) -> Self:
         global_episodic_return: Deque[float] = deque([], maxlen=20 * self.num_tasks)
         global_episodic_length: Deque[int] = deque([], maxlen=20 * self.num_tasks)
@@ -567,6 +572,7 @@ class OffPolicyAlgorithm(
         checkpoint_manager: ocp.CheckpointManager | None = None,
         checkpoint_metadata: CheckpointMetadata | None = None,
         buffer_checkpoint: ReplayBufferCheckpoint | None = None,
+        recording: RecordingConfig | None = None,
     ) -> Self:
         global_episodic_return: Deque[float] = deque([], maxlen=20 * self.num_tasks)
         global_episodic_length: Deque[int] = deque([], maxlen=20 * self.num_tasks)
@@ -580,6 +586,7 @@ class OffPolicyAlgorithm(
             start_step = checkpoint_metadata["step"]
             episodes_ended = checkpoint_metadata["episodes_ended"]
 
+        evaluation_index = 0
         replay_buffer = self.spawn_replay_buffer(env_config, config, seed)
         if buffer_checkpoint is not None:
             replay_buffer.load_checkpoint(buffer_checkpoint)
@@ -655,6 +662,7 @@ class OffPolicyAlgorithm(
                     and episode_started.any()
                     and global_step > 0
                 ):
+                    evaluation_index += 1
                     mean_success_rate, mean_returns, mean_success_per_task = (
                         env_config.evaluate(envs, self)
                     )
@@ -695,6 +703,18 @@ class OffPolicyAlgorithm(
                                 for k, v in eval_metrics.items()
                             },
                         )
+
+                    videos = maybe_record_agent_videos(
+                        env_config,
+                        self,
+                        total_steps,
+                        seed,
+                        evaluation_index,
+                        recording,
+                        log_to_wandb=track,
+                    )
+                    if videos:
+                        print(f"- Recorded {len(videos)} evaluation video(s)")
 
                     # Reset envs again to exit eval mode
                     obs, _ = envs.reset()
@@ -755,6 +775,7 @@ class OnPolicyAlgorithm(
         checkpoint_manager: ocp.CheckpointManager | None = None,
         checkpoint_metadata: CheckpointMetadata | None = None,
         buffer_checkpoint: ReplayBufferCheckpoint | None = None,
+        recording: RecordingConfig | None = None,
     ) -> Self:
         global_episodic_return: Deque[float] = deque([], maxlen=20 * self.num_tasks)
         global_episodic_length: Deque[int] = deque([], maxlen=20 * self.num_tasks)
@@ -768,6 +789,7 @@ class OnPolicyAlgorithm(
             start_step = checkpoint_metadata["step"]
             episodes_ended = checkpoint_metadata["episodes_ended"]
 
+        evaluation_index = 0
         rollout_buffer = self.spawn_rollout_buffer(env_config, config, seed)
 
         start_time = time.time()
@@ -851,6 +873,7 @@ class OnPolicyAlgorithm(
                     and episode_started.any()
                     and global_step > 0
                 ):
+                    evaluation_index += 1
                     mean_success_rate, mean_returns, mean_success_per_task = (
                         env_config.evaluate(envs, self)
                     )
@@ -890,6 +913,18 @@ class OnPolicyAlgorithm(
                                 for k, v in eval_metrics.items()
                             },
                         )
+
+                    videos = maybe_record_agent_videos(
+                        env_config,
+                        self,
+                        total_steps,
+                        seed,
+                        evaluation_index,
+                        recording,
+                        log_to_wandb=track,
+                    )
+                    if videos:
+                        print(f"- Recorded {len(videos)} evaluation video(s)")
 
                     # Reset envs again to exit eval mode
                     obs, _ = envs.reset()
