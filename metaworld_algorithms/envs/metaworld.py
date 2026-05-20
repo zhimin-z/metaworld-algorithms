@@ -1,15 +1,14 @@
 # pyright: reportAttributeAccessIssue=false, reportIncompatibleMethodOverride=false, reportOptionalMemberAccess=false
 from dataclasses import dataclass
 from functools import cached_property
-from typing import override
+from typing import Literal, override
 
 import gymnasium as gym
 import numpy as np
-
-from metaworld_algorithms.types import Agent, MetaLearningAgent, GymVectorEnv
+from metaworld.evaluation import evaluation, metalearning_evaluation
 
 from metaworld_algorithms.config.envs import EnvConfig, MetaLearningEnvConfig
-from metaworld.evaluation import evaluation, metalearning_evaluation
+from metaworld_algorithms.types import Agent, GymVectorEnv, MetaLearningAgent
 
 
 @dataclass(frozen=True)
@@ -19,6 +18,13 @@ class MetaworldConfig(EnvConfig):
     reward_normalization_method: str | None = None
     normalize_observations: bool = False
     env_name: str | None = None
+    render_mode: Literal["rgb_array"] = "rgb_array"
+    camera_name: str | None = "corner"
+    camera_id: int | None = None
+
+    def __post_init__(self):
+        if (self.env_id == "MT1" or self.env_id == "ML1") and self.env_name is None:
+            raise ValueError("MT1 requires env_name, for example env_name='reach-v3'.")
 
     @cached_property
     @override
@@ -106,17 +112,46 @@ class MetaworldConfig(EnvConfig):
 
     @override
     def spawn(self, seed: int = 1) -> GymVectorEnv:
-        return gym.make_vec(  # pyright: ignore[reportReturnType]
-            f"Meta-World/{self.env_id}",
+        kwargs = dict(
             seed=seed,
             use_one_hot=self.use_one_hot,
             terminate_on_success=self.terminate_on_success,
-            max_episode_steps=self.max_episode_steps,
             vector_strategy="async",
+            max_episode_steps=self.max_episode_steps,
             reward_function_version=self.reward_func_version,
-            num_goals=self.num_goals,
             reward_normalization_method=self.reward_normalization_method,
             normalize_observations=self.normalize_observations,
+            num_goals=self.num_goals,
+        )
+        if self.env_name:
+            kwargs["env_name"] = self.env_name
+
+        return gym.make_vec(  # pyright: ignore[reportReturnType]
+            f"Meta-World/{self.env_id}", **kwargs
+        )
+
+    @override
+    def spawn_rendered(
+        self,
+        seed: int = 1,
+    ) -> GymVectorEnv:
+        kwargs = dict(
+            seed=seed,
+            terminate_on_success=True,
+            vector_strategy="async",
+            max_episode_steps=self.max_episode_steps,
+            reward_function_version=self.reward_func_version,
+            reward_normalization_method=self.reward_normalization_method,
+            num_goals=self.num_goals,
+            render_mode=self.render_mode,
+            camera_name=self.camera_name,
+            camera_id=self.camera_id,
+        )
+        if self.env_name:
+            kwargs["env_name"] = self.env_name
+
+        return gym.make_vec(  # pyright: ignore[reportReturnType]
+            f"Meta-World/{self.env_id}", **kwargs
         )
 
 

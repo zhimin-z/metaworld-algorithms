@@ -24,6 +24,7 @@ from metaworld_algorithms.config.rl import (
     OffPolicyTrainingConfig,
     TrainingConfig,
 )
+from metaworld_algorithms.monitoring import RecordingConfig
 from metaworld_algorithms.rl.algorithms import (
     Algorithm,
     OffPolicyAlgorithm,
@@ -50,11 +51,20 @@ class Run:
     max_checkpoints_to_keep: int = 5
     best_checkpoint_metric: str = "mean_success_rate"
     resume: bool = False
+    recording: RecordingConfig = RecordingConfig(enabled=False)
 
     def __post_init__(self) -> None:
         self._wandb_enabled = False
         self._wandb_run_id: str | None = None
         self._timestamp = str(int(time.time()))
+        if (
+            self.recording.enabled
+            and type(self.env.spawn_rendered) is EnvConfig.spawn_rendered
+        ):
+            raise NotImplementedError(
+                "Recording is enabled, but "
+                f"{type(self.env).__name__} does not implement spawn_rendered(seed)."
+            )
 
     def _get_data_dir(self) -> pathlib.Path:
         return self.data_dir / f"{self.run_name}_{self.seed}"

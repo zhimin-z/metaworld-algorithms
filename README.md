@@ -28,6 +28,20 @@ Implementations of Multi-Task and Meta-Learning baselines for the Metaworld benc
 > Valid options are `cpu`, `tpu`, and `cuda12`.
 > macOS users should install the `cpu` extra for local development
 
+### Optional video recording dependencies
+
+Install the `recording` extra when you want to record rendered evaluation episodes:
+
+```sh
+uv pip install -e ".[cuda12,recording]"
+```
+
+Video recording uses MuJoCo offscreen rendering. The system must expose a working MuJoCo GL backend:
+- GPU/headless rendering: set `MUJOCO_GL=egl` and make sure EGL, GLVND, and the GPU
+  driver libraries are visible in the runtime environment.
+- CPU/software rendering: set `MUJOCO_GL=osmesa` and install OSMesa/Mesa GL runtime
+  libraries.
+
 ## Structure
 
 Here is how you can navigate this repository:
@@ -38,4 +52,4 @@ Here is how you can navigate this repository:
 - `metaworld_algorithms/rl/networks.py` contains code that wraps these neural network building blocks into agent components (actor networks, critic networks, etc).
 - `metaworld_algorithms/rl/buffers.py` contains code for the buffers used.
 - `metaworld_algorithms/rl/algorithms/base.py` contains code for training loops (e.g. on-policy, off-policy, meta-rl).
-- `meatworld_algorithms/envsmetaworld.py` contains utilities for wrapping metaworld for use with these baselines.
+- `metaworld_algorithms/envs/metaworld.py` contains utilities for wrapping metaworld for use with these baselines.
