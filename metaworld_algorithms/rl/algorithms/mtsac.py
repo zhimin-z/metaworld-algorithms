@@ -102,7 +102,6 @@ class MTSACConfig(AlgorithmConfig):
     num_critics: int = 2
     tau: float = 0.005
     use_task_weights: bool = False
-    max_q_value: float | None = 5000
 
 
 class MTSAC(OffPolicyAlgorithm[MTSACConfig]):
@@ -117,7 +116,6 @@ class MTSAC(OffPolicyAlgorithm[MTSACConfig]):
     split_actor_losses: bool = struct.field(pytree_node=False)
     split_critic_losses: bool = struct.field(pytree_node=False)
     num_critics: int = struct.field(pytree_node=False)
-    max_q_value: float | None = struct.field(pytree_node=False)
 
     @override
     @staticmethod
@@ -186,7 +184,6 @@ class MTSAC(OffPolicyAlgorithm[MTSACConfig]):
             num_critics=config.num_critics,
             split_actor_losses=config.actor_config.network_config.optimizer.requires_split_task_losses,
             split_critic_losses=config.critic_config.network_config.optimizer.requires_split_task_losses,
-            max_q_value=config.max_q_value,
         )
 
     @override
@@ -298,13 +295,6 @@ class MTSAC(OffPolicyAlgorithm[MTSACConfig]):
             )
 
             q_pred = self.critic.apply_fn(params, _data.observations, _data.actions)
-
-            if self.max_q_value is not None:
-                # HACK: Clipping Q values to approximate theoretical maximum for Metaworld
-                next_q_value = jnp.clip(
-                    next_q_value, -self.max_q_value, self.max_q_value
-                )
-                q_pred = jnp.clip(q_pred, -self.max_q_value, self.max_q_value)
 
             if _task_weights is not None:
                 loss = (_task_weights * (q_pred - next_q_value) ** 2).mean()

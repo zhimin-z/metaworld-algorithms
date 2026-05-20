@@ -24,18 +24,9 @@ Implementations of Multi-Task and Meta-Learning baselines for the Metaworld benc
 > You need to be explicit about your choice of accelerator by specifying the correct extra when installing.
 
 > [!NOTE]
-> The command in step 3. will install with NVIDIA GPU support. To use other accelerators, replace `cuda12` with the appropriate accelerator name.
-> Valid options are:
-> - `cpu` (No accelerator)
-> - `tpu` (GCP TPUs)
-> - `cuda12` (NVIDIA GPUs)
-> - `metal` (Apple Silicon)
->
-> For example, to install with TPU support, the proper commmand would be
-> ```
-> uv pip install -e ".[tpu]"
-> ```
-
+> To use other accelerators, replace `cuda12` with the appropriate accelerator name.
+> Valid options are `cpu`, `tpu`, and `cuda12`.
+> macOS users should install the `cpu` extra for local development
 
 ## Structure
 
@@ -48,4 +39,3 @@ Here is how you can navigate this repository:
 - `metaworld_algorithms/rl/buffers.py` contains code for the buffers used.
 - `metaworld_algorithms/rl/algorithms/base.py` contains code for training loops (e.g. on-policy, off-policy, meta-rl).
 - `meatworld_algorithms/envsmetaworld.py` contains utilities for wrapping metaworld for use with these baselines.
-

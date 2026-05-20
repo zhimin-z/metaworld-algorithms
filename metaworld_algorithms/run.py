@@ -196,13 +196,13 @@ class Run:
                 mean_success_rate, mean_returns, mean_success_per_task = (
                     self.env.evaluate(envs, agent)
                 )
-
-            envs.close()
-            del envs
-
-            if isinstance(agent, MetaLearningAlgorithm) and isinstance(
+                envs.close()
+                del envs
+            elif isinstance(agent, MetaLearningAlgorithm) and isinstance(
                 self.env, MetaLearningEnvConfig
             ):
+                envs.close()
+                del envs
                 gc.collect()
                 eval_envs = self.env.spawn_test(self.seed)
                 mean_success_rate, mean_returns, mean_success_per_task = (
@@ -211,7 +211,9 @@ class Run:
                 eval_envs.close()
                 del eval_envs
             else:
+                envs.close()
                 raise ValueError("Invalid agent / env combination.")
+
             final_metrics = {
                 "charts/mean_success_rate": float(mean_success_rate),
                 "charts/mean_evaluation_return": float(mean_returns),
