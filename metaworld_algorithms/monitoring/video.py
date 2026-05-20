@@ -33,11 +33,14 @@ class RecordingConfig:
     every_n_evaluations: int = 5
     record_final: bool = True
     episodes_per_task: int = 1
-    fps: int = 10
+    fps: int = 30
     frame_stride: int = 5
-    width: int = 256
-    height: int = 256
+    width: int = 512
+    height: int = 512
+    flip_vertical: bool = True
     overlay_tail_frames: int = 20
+    overlay_text_height_fraction: float = 0.05
+    overlay_background_alpha: float = 0.50
     output_subdir: str = "videos"
 
     def __post_init__(self) -> None:
@@ -72,8 +75,8 @@ def should_record_videos(
 
 
 def record_agent_videos(
-    envs: GymVectorEnv,
-    agent: Agent,
+    envs: "GymVectorEnv",
+    agent: "Agent",
     out_dir: str | Path,
     step: int,
     config: RecordingConfig | None = None,
@@ -108,7 +111,12 @@ def record_agent_videos(
                 )
                 if should_capture:
                     frames_by_env[env_index].append(
-                        _prepare_frame(frame, width=config.width, height=config.height)
+                        _prepare_frame(
+                            frame,
+                            width=config.width,
+                            height=config.height,
+                            flip_vertical=config.flip_vertical,
+                        )
                     )
 
         actions = agent.eval_action(obs)
@@ -128,6 +136,8 @@ def record_agent_videos(
                 frames_by_env[env_index],
                 success=success,
                 tail_frames=config.overlay_tail_frames,
+                text_height_fraction=config.overlay_text_height_fraction,
+                background_alpha=config.overlay_background_alpha,
             )
             episode_index = int(episodes_recorded[env_index])
             task_name = task_names[env_index]
@@ -138,7 +148,11 @@ def record_agent_videos(
                 task_name=task_name,
                 success=success,
             )
-            _write_video(path, frames, fps=config.fps)
+            _write_video(
+                path,
+                frames,
+                fps=_sampled_video_fps(config.fps, config.frame_stride),
+            )
             videos.append(
                 RecordedVideo(
                     path=path,
@@ -162,7 +176,9 @@ def record_agent_videos(
     return videos
 
 
-def _prepare_frame(frame: np.ndarray, *, width: int, height: int) -> np.ndarray:
+def _prepare_frame(
+    frame: np.ndarray, *, width: int, height: int, flip_vertical: bool
+) -> np.ndarray:
     from PIL import Image
 
     frame = np.asarray(frame)
@@ -174,20 +190,27 @@ def _prepare_frame(frame: np.ndarray, *, width: int, height: int) -> np.ndarray:
     image = Image.fromarray(frame)
     if image.mode != "RGB":
         image = image.convert("RGB")
+    if flip_vertical:
+        image = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
     if image.size != (width, height):
         image = image.resize((width, height), Image.Resampling.BILINEAR)
     return np.asarray(image)
 
 
 def _overlay_outcome(
-    frames: list[np.ndarray], *, success: bool, tail_frames: int
+    frames: list[np.ndarray],
+    *,
+    success: bool,
+    tail_frames: int,
+    text_height_fraction: float,
+    background_alpha: float,
 ) -> list[np.ndarray]:
     if not frames:
         raise RuntimeError("Cannot write a video with no rendered frames.")
     if tail_frames == 0:
         return frames
 
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
 
     label = "SUCCESS" if success else "FAILURE"
     fill = (10, 120, 70) if success else (170, 40, 40)
@@ -197,27 +220,74 @@ def _overlay_outcome(
     for index in range(overlay_start, len(rendered_frames)):
         image = Image.fromarray(rendered_frames[index]).convert("RGB")
         draw = ImageDraw.Draw(image)
-        font = ImageFont.load_default()
+        padding = max(8, int(image.height * 0.025))
+        target_text_height = max(1, int(image.height * text_height_fraction))
+        font = _fit_font(
+            draw,
+            label,
+            max_width=max(1, image.width - 2 * padding),
+            target_height=target_text_height,
+        )
         bbox = draw.textbbox((0, 0), label, font=font)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
-        padding = 8
-        draw.rectangle(
-            (
-                padding,
-                padding,
-                padding * 3 + text_width,
-                padding * 3 + text_height,
-            ),
-            fill=fill,
+        box = (
+            padding,
+            padding,
+            padding * 3 + text_width,
+            padding * 3 + text_height,
         )
-        draw.text((padding * 2, padding * 2), label, fill=(255, 255, 255), font=font)
+        overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        overlay_draw.rectangle(
+            box,
+            fill=(*fill, int(255 * background_alpha)),
+        )
+        image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        draw.text(
+            (
+                padding * 2 - bbox[0],
+                padding * 2 - bbox[1],
+            ),
+            label,
+            fill=(255, 255, 255),
+            font=font,
+        )
         rendered_frames[index] = np.asarray(image)
 
     return rendered_frames
 
 
-def _write_video(path: Path, frames: list[np.ndarray], *, fps: int) -> None:
+def _fit_font(draw, label: str, *, max_width: int, target_height: int):
+    from PIL import ImageFont
+
+    best_font = ImageFont.load_default(size=1)
+    low = 1
+    high = max(2, target_height * 4)
+
+    while low <= high:
+        size = (low + high) // 2
+        font = ImageFont.load_default(size=size)
+        bbox = draw.textbbox((0, 0), label, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        if text_width <= max_width and text_height <= target_height:
+            best_font = font
+            low = size + 1
+        else:
+            high = size - 1
+
+    return best_font
+
+
+def _sampled_video_fps(fps: int, frame_stride: int) -> float:
+    if frame_stride < 1:
+        raise ValueError(f"frame_stride must be at least 1, got {frame_stride}.")
+    return max(1.0, fps / frame_stride)
+
+
+def _write_video(path: Path, frames: list[np.ndarray], *, fps: float) -> None:
     import imageio.v2 as imageio
 
     imageio.mimsave(path, frames, fps=fps, macro_block_size=1)

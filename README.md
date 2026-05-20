@@ -16,7 +16,7 @@ Implementations of Multi-Task and Meta-Learning baselines for the Metaworld benc
    ```
 5. Install the dependencies
    ```
-   uv pip install -e ".[cuda12]"
+   uv pip install -e ".[cuda13]"
    ```
 
 > [!Important]
@@ -24,8 +24,8 @@ Implementations of Multi-Task and Meta-Learning baselines for the Metaworld benc
 > You need to be explicit about your choice of accelerator by specifying the correct extra when installing.
 
 > [!NOTE]
-> To use other accelerators, replace `cuda12` with the appropriate accelerator name.
-> Valid options are `cpu`, `tpu`, and `cuda12`.
+> To use other accelerators, replace `cuda13` with the appropriate accelerator name.
+> Valid options are `cpu`, `tpu`, and `cuda13`.
 > macOS users should install the `cpu` extra for local development
 
 ### Optional video recording dependencies
@@ -33,7 +33,7 @@ Implementations of Multi-Task and Meta-Learning baselines for the Metaworld benc
 Install the `recording` extra when you want to record rendered evaluation episodes:
 
 ```sh
-uv pip install -e ".[cuda12,recording]"
+uv pip install -e ".[cuda13,recording]"
 ```
 
 Video recording uses MuJoCo offscreen rendering. The system must expose a working MuJoCo GL backend:

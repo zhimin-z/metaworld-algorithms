@@ -18,14 +18,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cpu = ["jax>=0.7.0"]
-cuda12 = ["jax[cuda12]>=0.7.0"]
-tpu = ["jax[tpu]>=0.7.0"]
+cpu = ["jax>=0.10.0"]
+cuda13 = ["jax[cuda13]>=0.10.0"]
+tpu = ["jax[tpu]>=0.10.0"]
 recording = [
     "imageio[ffmpeg]>=2.37.0",
     "pillow>=11.0.0",
 ]
-testing = [
+
+[dependency-groups]
+test = [
     "chex>=0.1.89",
     "pytest>=8.3.5",
 ]
@@ -35,13 +37,13 @@ prerelease = "allow"
 conflicts = [
   [
     { extra = "cpu" },
-    { extra = "cuda12" },
+    { extra = "cuda13" },
     { extra = "tpu" },
   ],
 ]
 
 [tool.uv.sources]
-metaworld = { git = "https://github.com/reginald-mclean/Metaworld.git", rev = "same-step-autoreset" }
+metaworld = { git = "https://github.com/rainx0r/Metaworld.git", rev = "master" }
 
 [tool.ruff]
 ignore = ["F722"]

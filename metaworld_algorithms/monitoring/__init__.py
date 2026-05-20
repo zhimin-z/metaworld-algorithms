@@ -1,7 +1,6 @@
 from .video import (
     RecordedVideo,
     RecordingConfig,
-    VideoRecordingConfig,
     record_agent_videos,
     should_record_videos,
 )
@@ -9,7 +8,6 @@ from .video import (
 __all__ = [
     "RecordingConfig",
     "RecordedVideo",
-    "VideoRecordingConfig",
     "record_agent_videos",
     "should_record_videos",
 ]

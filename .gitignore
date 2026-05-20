@@ -65,6 +65,10 @@ db.sqlite3-journal
 instance/
 .webassets-cache
 
+# Local video recording previews
+videos/
+videos-preview/
+
 # Scrapy stuff:
 .scrapy
 
